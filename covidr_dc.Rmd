@@ -1,0 +1,81 @@
+---
+title: "DC COVID Neighborhood Stats"
+output: github_document
+---
+
+
+
+```{r}
+# Import packages
+library(tidyverse)
+library(tmap)
+library(sf)
+library(tmaptools)
+library(lubridate)
+library(viridis)
+
+# Zipcodes from Fairfax County and Census Tracts from DC
+ff_zip <- read_sf("data/shp/FF_ZIP_Codes-shp/f67253f3-bdb1-4adf-aad3-0ad3e1ee3308202042-1-1lhp864.emmq.shp")
+
+dc_tract <- read_sf("data/shp/DC_Census_Tracts_in_2010-shp/bbc2ea69-f003-4474-a8f7-f24e582123fd2020411-1-avqi8k.7o6zq.shp")
+
+dc_nb_mapping <- read_csv("data/neighborhood_mapping.csv", col_types = cols(
+  .default = col_character())) %>% 
+  select(GEOID = 'GEO ID 2', nb = 'Neighborhood (NB) label')
+
+# Read in population datasets
+ff_pop <- read_sf("data/shp/FF_Current_Population-shp/f8977e15-61d6-4039-801c-8ab0199a92652020328-1-vw26yx.twmij.shp")
+
+dc_pop <- read_sf("data/shp/ACS_2018_Population_Variables_Tract-shp/1a06e536-b186-4e78-bab7-63836dce84f82020328-1-r1rbgx.oico.shp")
+
+ff_covid <- read_csv("data/VDH-COVID-19-PublicUseDataset-ZIPCode.csv")
+
+dc_May112020 <- read_csv("data/Health Statistics-1.csv") %>% 
+  separate(1, c("nb", "cases"), sep=",") %>% 
+  mutate(cases = parse_number(cases),
+         date = date("2020-05-11"))
+
+# Lots of cleaning required for this one...
+dc_covid <- read_csv("data/nb_covid_data.csv") %>% 
+  mutate(nb = paste(`NB Code`, `Neighborhood Name`, sep = ": "),
+         May10 = `Total cases \nMay 10`,
+         May09 = `Total cases \nMay 9`,
+         May08 = `Total cases \nMay 8`,
+         May07 = `Total cases \nMay 7`) %>% 
+  select(nb, May10, May09, May08, May07) %>% 
+  pivot_longer(-nb, names_to = "date", values_to = "cases") %>% 
+  mutate(date = mdy(paste(date, "2020", sep = ""))) %>% 
+  bind_rows(dc_May112020)
+
+# Joins begin
+dc_covid_stats <- dc_tract %>% 
+  left_join(as_tibble(dc_pop), by = "GEOID") %>% 
+  left_join(dc_nb_mapping, by = "GEOID") %>% 
+  select(GEOID, TRACT, nb, pop_tot = B01001_001, pop_wht = P0010003, pop_blk = P0010004, pop_hsp = P0020002) %>%  
+  group_by(nb) %>% 
+  summarise(
+    pop_tot = sum(pop_tot),
+    pop_wht = sum(pop_wht),
+    pop_blk = sum(pop_blk),
+    pop_hsp = sum(pop_hsp)
+  ) %>% 
+  left_join(dc_covid, by = "nb") %>% 
+  mutate(rate1000 = (cases/pop_tot)*1000,
+         pct_wht = pop_wht/pop_tot,
+         pct_blk = pop_blk/pop_tot,
+         pct_hsp = pop_hsp/pop_tot)
+
+dc_covid_stats %>% 
+  filter(date == '2020-05-11') %>% 
+  mutate(per1000 = (cases/pop_tot)*1000) %>% 
+  tm_shape() +
+  tm_polygons("rate1000", palette = "-viridis")
+
+```
+
+```{r}
+# New data from DC
+
+
+```
+
