@@ -3,7 +3,7 @@ title: "DC COVID Neighborhood Stats"
 output: github_document
 ---
 
-
+Import necessary libraries
 
 ```{r}
 # Import packages
@@ -13,29 +13,47 @@ library(sf)
 library(tmaptools)
 library(lubridate)
 library(viridis)
+library(modelr)
+```
 
-# Zipcodes from Fairfax County and Census Tracts from DC
-ff_zip <- read_sf("data/shp/FF_ZIP_Codes-shp/f67253f3-bdb1-4adf-aad3-0ad3e1ee3308202042-1-1lhp864.emmq.shp")
+Import statistics layers (these files do not change over time)
 
+```{r}
+# DC Census tracts
 dc_tract <- read_sf("data/shp/DC_Census_Tracts_in_2010-shp/bbc2ea69-f003-4474-a8f7-f24e582123fd2020411-1-avqi8k.7o6zq.shp")
 
+# Linking DC Census Tracts with DC's Neighborhoods
 dc_nb_mapping <- read_csv("data/neighborhood_mapping.csv", col_types = cols(
   .default = col_character())) %>% 
   select(GEOID = 'GEO ID 2', nb = 'Neighborhood (NB) label')
 
-# Read in population datasets
-ff_pop <- read_sf("data/shp/FF_Current_Population-shp/f8977e15-61d6-4039-801c-8ab0199a92652020328-1-vw26yx.twmij.shp")
-
+# ACS 2018 datasets
 dc_pop <- read_sf("data/shp/ACS_2018_Population_Variables_Tract-shp/1a06e536-b186-4e78-bab7-63836dce84f82020328-1-r1rbgx.oico.shp")
+dc_income <- read_sf("data/shp/ACS_2018_Median_Household_Income_Variables_Tract-shp/c9ca5f40-0f43-4de6-a527-28440f3bdf132020330-1-9idood.na0x.shp")
+dc_pov <- read_sf("data/shp/ACS_2018_Poverty_Status_Variables_Tract-shp/78ff4a24-6d16-4d59-969c-b5e9f72342092020329-1-hfthzv.ozl25.shp")
+```
 
-ff_covid <- read_csv("data/VDH-COVID-19-PublicUseDataset-ZIPCode.csv")
+Import new DC cases pulled daily
 
-dc_May112020 <- read_csv("data/Health Statistics-1.csv") %>% 
-  separate(1, c("nb", "cases"), sep=",") %>% 
+```{r}
+# Makes a list of all the files in the directory
+# Adds a new column with the file name
+files <- list.files(path = "data/dc_nb/", pattern = "csv", full.names = TRUE) %>% 
+  set_names() %>% 
+  map_dfr(read_csv, col_types = cols(.default = "c"), .id = "source")
+
+# Clean up the new cases data 
+dc_new_cases <- files %>% 
+  separate(2, c("nb", "cases"), sep = ",") %>% 
   mutate(cases = parse_number(cases),
-         date = date("2020-05-11"))
+         date = dmy(str_sub(source, 30, 39))) %>% 
+  select(nb, cases, date)
+```
 
-# Lots of cleaning required for this one...
+Clean and combine the historical and new data to reflect neighborhood level numbers
+
+```{r, message=FALSE, warning=FALSE}
+# Clean up the historical data and join new data
 dc_covid <- read_csv("data/nb_covid_data.csv") %>% 
   mutate(nb = paste(`NB Code`, `Neighborhood Name`, sep = ": "),
          May10 = `Total cases \nMay 10`,
@@ -45,37 +63,61 @@ dc_covid <- read_csv("data/nb_covid_data.csv") %>%
   select(nb, May10, May09, May08, May07) %>% 
   pivot_longer(-nb, names_to = "date", values_to = "cases") %>% 
   mutate(date = mdy(paste(date, "2020", sep = ""))) %>% 
-  bind_rows(dc_May112020)
+  bind_rows(dc_new_cases)
 
-# Joins begin
+# Join all data available at the census tract, then group by neighborhoods
 dc_covid_stats <- dc_tract %>% 
   left_join(as_tibble(dc_pop), by = "GEOID") %>% 
+  left_join(as_tibble(dc_income), by = "GEOID") %>%
+  left_join(as_tibble(dc_pov), by = "GEOID") %>% 
   left_join(dc_nb_mapping, by = "GEOID") %>% 
-  select(GEOID, TRACT, nb, pop_tot = B01001_001, pop_wht = P0010003, pop_blk = P0010004, pop_hsp = P0020002) %>%  
+  select(
+    GEOID, 
+    TRACT, 
+    nb, 
+    pop_tot = B01001_001, 
+    pop_wht = P0010003, 
+    pop_blk = P0010004, 
+    pop_hsp = P0020002,
+    med_income = B19049_001,
+    pov_pct = B17020_cal,
+    pctover65 = B01001_c_8) %>%  
   group_by(nb) %>% 
   summarise(
     pop_tot = sum(pop_tot),
     pop_wht = sum(pop_wht),
     pop_blk = sum(pop_blk),
-    pop_hsp = sum(pop_hsp)
+    pop_hsp = sum(pop_hsp),
+    med_income = max(med_income),
+    pov_pct = max(pov_pct),
+    pctover65 = max(pctover65)
   ) %>% 
   left_join(dc_covid, by = "nb") %>% 
   mutate(rate1000 = (cases/pop_tot)*1000,
          pct_wht = pop_wht/pop_tot,
          pct_blk = pop_blk/pop_tot,
          pct_hsp = pop_hsp/pop_tot)
+```
 
+Try some modeling
+
+```{r}
+dc_12May <- dc_covid_stats %>% 
+  filter(date == '2020-05-12')
+
+md <- lm(rate1000 ~ pct_hsp + pct_blk + pov_pct + med_income + pctover65, data = dc_12May)
+
+summary(md)
+```
+
+
+```{r}
+# New data from DC
 dc_covid_stats %>% 
   filter(date == '2020-05-11') %>% 
   mutate(per1000 = (cases/pop_tot)*1000) %>% 
   tm_shape() +
   tm_polygons("rate1000", palette = "-viridis")
-
-```
-
-```{r}
-# New data from DC
-
 
 ```
 
